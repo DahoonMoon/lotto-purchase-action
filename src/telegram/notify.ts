@@ -8,6 +8,13 @@ interface PurchaseMetadata {
   timestamp: string;
 }
 
+// Escape characters that are special in Telegram legacy Markdown (parse_mode: 'Markdown').
+// Without this, an error message containing _ * ` or [ makes Telegram reject the
+// message with HTTP 400, so the failure notification would silently never arrive.
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*`[]/g, '\\$&');
+}
+
 // Send purchase notification to Telegram
 export async function notifyPurchase(purchases: PurchaseMetadata[]): Promise<void> {
   if (!isEnabled()) return;
@@ -43,5 +50,20 @@ export async function notifyWinning(issueNumber: number, round: number, ranks: n
   const message = `🎉 *제${round}회 당첨!*\n\n` + `${results}\n\n` + `Issue #${issueNumber}`;
 
   console.log('[Telegram] Sending winning notification');
+  await sendMessage(message);
+}
+
+// Send failure notification to Telegram (login / purchase / workflow error)
+export async function notifyFailure(error: unknown): Promise<void> {
+  if (!isEnabled()) return;
+
+  const round = getNextLottoRound();
+  const reason = error instanceof Error ? error.message : String(error);
+  // Slice the raw reason first, then escape, so we never cut a backslash escape in half.
+  const safeReason = escapeMarkdown(reason.slice(0, 1000));
+
+  const message = `⚠️ *제${round}회 로또 구매 실패*\n\n` + `사유: ${safeReason}`;
+
+  console.log('[Telegram] Sending failure notification');
   await sendMessage(message);
 }

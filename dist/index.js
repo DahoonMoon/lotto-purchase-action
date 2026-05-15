@@ -55956,6 +55956,12 @@ function sendMessage(text) {
     });
 }
 
+// Escape characters that are special in Telegram legacy Markdown (parse_mode: 'Markdown').
+// Without this, an error message containing _ * ` or [ makes Telegram reject the
+// message with HTTP 400, so the failure notification would silently never arrive.
+function escapeMarkdown(text) {
+    return text.replace(/[_*`[]/g, '\\$&');
+}
 // Send purchase notification to Telegram
 function notifyPurchase(purchases) {
     return __awaiter$3(this, void 0, void 0, function* () {
@@ -55986,6 +55992,20 @@ function notifyWinning(issueNumber, round, ranks) {
         const results = winningGames.map(g => `  ${rankEmojis[g.rank]} ${g.game}번 게임: ${g.rank}등 당첨!`).join('\n');
         const message = `🎉 *제${round}회 당첨!*\n\n` + `${results}\n\n` + `Issue #${issueNumber}`;
         console.log('[Telegram] Sending winning notification');
+        yield sendMessage(message);
+    });
+}
+// Send failure notification to Telegram (login / purchase / workflow error)
+function notifyFailure(error) {
+    return __awaiter$3(this, void 0, void 0, function* () {
+        if (!isEnabled())
+            return;
+        const round = getNextLottoRound();
+        const reason = error instanceof Error ? error.message : String(error);
+        // Slice the raw reason first, then escape, so we never cut a backslash escape in half.
+        const safeReason = escapeMarkdown(reason.slice(0, 1000));
+        const message = `⚠️ *제${round}회 로또 구매 실패*\n\n` + `사유: ${safeReason}`;
+        console.log('[Telegram] Sending failure notification');
         yield sendMessage(message);
     });
 }
@@ -56097,6 +56117,14 @@ function run() {
                 console.error('[Main] Workflow error:', error);
                 coreExports.setFailed(String(error));
             }
+            // Notify the failure reason via Telegram (best-effort: never let a
+            // notification problem mask the original error or break the finally block)
+            try {
+                yield notifyFailure(error);
+            }
+            catch (notifyError) {
+                console.error('[Main] Failed to send failure notification:', notifyError);
+            }
             // Continue to create issues for successful purchases
         }
         finally {
@@ -56106,11 +56134,17 @@ function run() {
                     yield createConsolidatedIssue(purchases);
                     const totalGames = purchases.reduce((sum, p) => sum + p.numbers.length, 0);
                     console.log(`[Main] Created consolidated issue for ${purchases.length} purchases (${totalGames} total games)`);
-                    // Send Telegram notification for purchases
-                    yield notifyPurchase(purchases);
                 }
                 catch (error) {
                     console.error(`[Main] Failed to create consolidated issue:`, error);
+                }
+                // Send Telegram notification for purchases independently, so a GitHub
+                // issue-creation failure never suppresses the purchase notification
+                try {
+                    yield notifyPurchase(purchases);
+                }
+                catch (error) {
+                    console.error(`[Main] Failed to send purchase notification:`, error);
                 }
             }
             else {

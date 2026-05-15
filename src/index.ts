@@ -5,7 +5,7 @@ import { BrowserSession } from './core/browser';
 import { purchaseAuto, purchaseManual } from './core/purchase';
 import { generateExcluding } from './utils/numbers';
 import { initLabels, createConsolidatedIssue, checkWinningIssues } from './github/issues';
-import { notifyPurchase, notifyWinning } from './telegram/notify';
+import { notifyPurchase, notifyWinning, notifyFailure } from './telegram/notify';
 
 interface PurchaseMetadata {
   type: 'auto' | 'manual';
@@ -140,6 +140,13 @@ async function run() {
       console.error('[Main] Workflow error:', error);
       core.setFailed(String(error));
     }
+    // Notify the failure reason via Telegram (best-effort: never let a
+    // notification problem mask the original error or break the finally block)
+    try {
+      await notifyFailure(error);
+    } catch (notifyError) {
+      console.error('[Main] Failed to send failure notification:', notifyError);
+    }
     // Continue to create issues for successful purchases
   } finally {
     // Create one consolidated issue for all successful purchases
@@ -148,11 +155,16 @@ async function run() {
         await createConsolidatedIssue(purchases);
         const totalGames = purchases.reduce((sum, p) => sum + p.numbers.length, 0);
         console.log(`[Main] Created consolidated issue for ${purchases.length} purchases (${totalGames} total games)`);
-
-        // Send Telegram notification for purchases
-        await notifyPurchase(purchases);
       } catch (error) {
         console.error(`[Main] Failed to create consolidated issue:`, error);
+      }
+
+      // Send Telegram notification for purchases independently, so a GitHub
+      // issue-creation failure never suppresses the purchase notification
+      try {
+        await notifyPurchase(purchases);
+      } catch (error) {
+        console.error(`[Main] Failed to send purchase notification:`, error);
       }
     } else {
       console.log(`[Main] No successful purchases to create issue`);
